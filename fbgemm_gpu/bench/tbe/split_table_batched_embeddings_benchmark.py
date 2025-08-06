@@ -971,6 +971,13 @@ def cache(  # noqa C901
 @click.option("--slice-min", type=int, default=None)
 @click.option("--slice-max", type=int, default=None)
 @click.pass_context
+@click.option("--save", type=str, default=None)
+@click.option("--load", type=str, default=None)
+@click.option("--random-weights", is_flag=True, default=False)
+@click.option("--compressed", is_flag=True, default=False)
+@click.option("--slice-min", type=int, default=None)
+@click.option("--slice-max", type=int, default=None)
+@click.pass_context
 def device_with_spec(  # noqa C901
     ctx,
     alpha: float,
