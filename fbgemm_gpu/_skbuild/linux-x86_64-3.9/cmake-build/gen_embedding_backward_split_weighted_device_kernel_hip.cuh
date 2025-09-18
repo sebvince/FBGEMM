@@ -20,10 +20,23 @@
 #include "fbgemm_gpu/embedding_backward_template_helpers_hip.cuh"
 #include "fbgemm_gpu/utils/tensor_accessor_builder_hip.h"
 #include "fbgemm_gpu/split_embeddings_utils_hip.cuh"
+#include "fbgemm_gpu/rocm/split_embeddings_common.h"
 
 using namespace fbgemm_gpu;
 
 #if 1
+// Buffer load test for WRT4
+// #define BUFFER_LOAD_TEST
+
+__device__ uint64_t llvm_amdgcn_raw_buffer_load_fp16x4(int32x4_t srsrc, uint32_t voffset, uint32_t soffset, uint32_t coherency)
+    __asm("llvm.amdgcn.raw.buffer.load.i64");
+
+static __device__ void buffer_load_fp16x4(c10::Half* dst, const c10::Half* p_src, int32_t offset){
+    int32x4_t res =
+        fbgemm_gpu::rocm::amdgcn_make_buffer_resource(p_src);
+    *reinterpret_cast<uint64_t*>(&dst[0]) =
+        llvm_amdgcn_raw_buffer_load_fp16x4(res, offset * sizeof(uint64_t), 0, 0);
+}
 
 
 template <
@@ -51,6 +64,11 @@ DEVICE_INLINE void compute_grad_sum_weighted_unroll(
     const int32_t vec_start
 )
 {
+    #ifdef BUFFER_LOAD_TEST 
+    int32x4_t res =
+        fbgemm_gpu::rocm::amdgcn_make_buffer_resource(&grad_output[0][0]);
+    #endif
+
         for (int32_t sl = sl_start; sl < sl_end; sl += kThreadGroupSize) {
             auto sl_j = sl + threadIdx.x;
             const auto b_t = sl_j < sl_end
@@ -60,6 +78,7 @@ DEVICE_INLINE void compute_grad_sum_weighted_unroll(
             const auto b = b_t & info_B_mask;
             const auto t = b_t >> info_B_num_bits; // if vbe
             int32_t D_start = sl_j < sl_end ? D_offsets[t] : 0; // if vbe // if not nobag
+
             at::acc_type<cache_t, true> idx_weight = sl_j < sl_end
                 ? sorted_indice_weights[segment_start + sl_j]
                 : 0.0;
@@ -82,10 +101,22 @@ DEVICE_INLINE void compute_grad_sum_weighted_unroll(
                     const int32_t d = (((vec + vec_start) * kThreadGroupSize + threadIdx.x) * VEC_WIDTH);
                     #pragma unroll unrollCount
                     for (int32_t i = 0; i < unrollCount; ++i) {
-                        Vec4TAcc<grad_t> grad_out_vec(
-                            &grad_output[b_ids[i]][0] + b_startIds[i] + d // if nobag
-                        );
-                        grad_sum[vec].fma_(grad_out_vec, idx_weight_ids[i]);
+                        #ifdef BUFFER_LOAD_TEST 
+                        if constexpr(std::is_same<grad_t, c10::Half>::value){
+                            grad_t dst[VEC_WIDTH];
+                            const int32_t offset = (b_ids[i]*3840 + b_startIds[i]) *sizeof(half)+((vec + vec_start) * kThreadGroupSize + threadIdx.x)*sizeof(uint64_t);
+                            constexpr bool nt_mode = false;
+                            *reinterpret_cast<uint64_t*>(&dst[0]) = llvm_amdgcn_raw_buffer_load_fp16x4(res, offset , 0, nt_mode ? 2 : 0);
+                            Vec4TAcc<grad_t> grad_out_vec(dst);
+                            grad_sum[vec].fma_(grad_out_vec, idx_weight_ids[i]);
+                        }
+                        #else
+                            Vec4TAcc<grad_t> grad_out_vec(
+                                &grad_output[b_ids[i]][0] + b_startIds[i] + d // if nobag
+                            );
+                            grad_sum[vec].fma_(grad_out_vec, idx_weight_ids[i]);
+                        #endif
+                        
                     }
                 }
         }
@@ -135,7 +166,10 @@ DEVICE_INLINE void compute_grad_sum_weighted(
         }
 
         int32_t sl_length = sl_end - sl_start;
-        const int32_t unroll_factors[] = {8, 4, 2};
+        // if (threadIdx.x == 0){
+        //     printf("sl_length = %d \n",sl_length);
+        // }
+        const int32_t unroll_factors[] = {8};//{8, 4, 2};
         const size_t num_factors = sizeof(unroll_factors) / sizeof(unroll_factors[0]);
         int32_t start[num_factors], end[num_factors];
         // Calculate start and end indices
@@ -149,30 +183,30 @@ DEVICE_INLINE void compute_grad_sum_weighted(
          // Lambda for unroll call
         auto call_unroll = [&](int unroll, int sl_start, int sl_end) {
             switch (unroll) {
-                case 16:
-                    compute_grad_sum_weighted_unroll<grad_t,cache_t,kFixedMaxVecsPerThread,kThreadGroupSize,VEC_WIDTH,16>(
-                        grad_sum, grad_output, D_offsets, D, T, sorted_infos,sorted_indice_weights, info_B_num_bits, info_B_mask,
-                        segment_start, sl_start, sl_end, shfl_sync_mask, vec_start
-                    );
-                    break;
+                // case 16:
+                //     compute_grad_sum_weighted_unroll<grad_t,cache_t,kFixedMaxVecsPerThread,kThreadGroupSize,VEC_WIDTH,16>(
+                //         grad_sum, grad_output, D_offsets, D, T, sorted_infos,sorted_indice_weights, info_B_num_bits, info_B_mask,
+                //         segment_start, sl_start, sl_end, shfl_sync_mask, vec_start
+                //     );
+                //     break;
                 case 8:
                     compute_grad_sum_weighted_unroll<grad_t,cache_t,kFixedMaxVecsPerThread,kThreadGroupSize,VEC_WIDTH,8>(
                         grad_sum, grad_output, D_offsets, D, T, sorted_infos,sorted_indice_weights, info_B_num_bits, info_B_mask,
                         segment_start, sl_start, sl_end, shfl_sync_mask, vec_start
                     );
                     break;
-                case 4:
-                    compute_grad_sum_weighted_unroll<grad_t,cache_t,kFixedMaxVecsPerThread,kThreadGroupSize,VEC_WIDTH,4>(
-                        grad_sum, grad_output, D_offsets, D, T, sorted_infos,sorted_indice_weights, info_B_num_bits, info_B_mask,
-                        segment_start, sl_start, sl_end, shfl_sync_mask, vec_start
-                    );
-                    break;
-                case 2:
-                    compute_grad_sum_weighted_unroll<grad_t,cache_t,kFixedMaxVecsPerThread,kThreadGroupSize,VEC_WIDTH,2>(
-                        grad_sum, grad_output, D_offsets, D, T, sorted_infos,sorted_indice_weights, info_B_num_bits, info_B_mask,
-                        segment_start, sl_start, sl_end, shfl_sync_mask, vec_start
-                    );
-                    break;
+                // case 4:
+                //     compute_grad_sum_weighted_unroll<grad_t,cache_t,kFixedMaxVecsPerThread,kThreadGroupSize,VEC_WIDTH,4>(
+                //         grad_sum, grad_output, D_offsets, D, T, sorted_infos,sorted_indice_weights, info_B_num_bits, info_B_mask,
+                //         segment_start, sl_start, sl_end, shfl_sync_mask, vec_start
+                //     );
+                //     break;
+                // case 2:
+                //     compute_grad_sum_weighted_unroll<grad_t,cache_t,kFixedMaxVecsPerThread,kThreadGroupSize,VEC_WIDTH,2>(
+                //         grad_sum, grad_output, D_offsets, D, T, sorted_infos,sorted_indice_weights, info_B_num_bits, info_B_mask,
+                //         segment_start, sl_start, sl_end, shfl_sync_mask, vec_start
+                //     );
+                //     break;
                 case 1:
                     compute_grad_sum_weighted_unroll<grad_t,cache_t,kFixedMaxVecsPerThread,kThreadGroupSize,VEC_WIDTH,1>(
                         grad_sum, grad_output, D_offsets, D, T, sorted_infos,sorted_indice_weights, info_B_num_bits, info_B_mask,
