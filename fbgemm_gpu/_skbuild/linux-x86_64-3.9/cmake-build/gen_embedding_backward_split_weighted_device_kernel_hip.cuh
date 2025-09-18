@@ -135,11 +135,12 @@ DEVICE_INLINE void compute_grad_sum_weighted(
         }
 
         int32_t sl_length = sl_end - sl_start;
-        int32_t unroll_factors[] = {16, 8, 4, 2};
-        int32_t start[4], end[4];
+        const int32_t unroll_factors[] = {8, 4, 2};
+        const size_t num_factors = sizeof(unroll_factors) / sizeof(unroll_factors[0]);
+        int32_t start[num_factors], end[num_factors];
         // Calculate start and end indices
         int32_t prev_end = sl_start;
-        for (int i = 0; i < 4; ++i) {
+        for (int i = 0; i < num_factors; ++i) {
             start[i] = prev_end;
             end[i] = sl_end - sl_length % unroll_factors[i];
             prev_end = end[i];
@@ -181,39 +182,11 @@ DEVICE_INLINE void compute_grad_sum_weighted(
             }
         };
 
-        for (int i = 0; i < 4; ++i) {
+        for (int i = 0; i < num_factors; ++i) {
             call_unroll(unroll_factors[i], start[i], end[i]);
         }
        
-        call_unroll(1, end[3], sl_end);
-
-        // for (int32_t sl = sl_start; sl < sl_end; sl += kThreadGroupSize) {
-        //     auto sl_j = sl + threadIdx.x;
-        //     const auto b_t = sl_j < sl_end
-        //         ? reinterpret_cast<const uint32_t*>(
-        //             &sorted_infos[0])[segment_start + sl_j]
-        //         : 0;
-        //     const auto b = b_t & info_B_mask;
-        //     const auto t = b_t >> info_B_num_bits; // if vbe
-        //     int32_t D_start = sl_j < sl_end ? D_offsets[t] : 0; // if vbe // if not nobag
-        //     at::acc_type<cache_t, true> idx_weight = sl_j < sl_end
-        //         ? sorted_indice_weights[segment_start + sl_j]
-        //         : 0.0;
-        //     for (int32_t j = 0; j < kThreadGroupSize && sl + j < sl_end; ++j) {
-        //         int32_t b_j = SHFL_SYNC(b, j);
-        //         int32_t D_start_j = SHFL_SYNC(D_start, j);
-        //         at::acc_type<cache_t, true> idx_weight_j = SHFL_SYNC(idx_weight, j);
-
-        //         #pragma unroll kFixedMaxVecsPerThread
-        //         for (int32_t vec = 0; vec < kFixedMaxVecsPerThread && (((vec + vec_start) * kThreadGroupSize + threadIdx.x) * VEC_WIDTH) < D; ++vec) {
-        //             const int32_t d = (((vec + vec_start) * kThreadGroupSize + threadIdx.x) * VEC_WIDTH);
-        //             Vec4TAcc<grad_t> grad_out_vec(
-        //                 &grad_output[b_j][0] + D_start_j + d // if nobag
-        //             );
-        //             grad_sum[vec].fma_(grad_out_vec, idx_weight_j);
-        //         }
-        //     }
-        // }
+        call_unroll(1, end[num_factors-1], sl_end);
 
         if (smem_grad_sum) {
             // Store grad_sum in smem_grad_sum

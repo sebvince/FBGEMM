@@ -23,7 +23,7 @@
 
 using namespace fbgemm_gpu;
 
-#if 0
+#if 1
 
 template <
     typename grad_t,
@@ -125,11 +125,12 @@ DEVICE_INLINE void compute_grad_sum_unweighted(
         }
 
         int32_t sl_length = sl_end - sl_start;
-        int32_t unroll_factors[] = {16, 8, 4, 2};
-        int32_t start[4], end[4];
+        const int32_t unroll_factors[] = {8, 4, 2};
+        const size_t num_factors = sizeof(unroll_factors) / sizeof(unroll_factors[0]);
+        int32_t start[num_factors], end[num_factors];
         // Calculate start and end indices
         int32_t prev_end = sl_start;
-        for (int i = 0; i < 4; ++i) {
+        for (int i = 0; i < num_factors; ++i) {
             start[i] = prev_end;
             end[i] = sl_end - sl_length % unroll_factors[i];
             prev_end = end[i];
@@ -171,11 +172,11 @@ DEVICE_INLINE void compute_grad_sum_unweighted(
             }
         };
 
-        for (int i = 0; i < 4; ++i) {
+        for (int i = 0; i < num_factors; ++i) {
             call_unroll(unroll_factors[i], start[i], end[i]);
         }
        
-        call_unroll(1, end[3], sl_end);
+        call_unroll(1, end[num_factors-1], sl_end);
 
         if (smem_grad_sum) {
             // Store grad_sum in smem_grad_sum
