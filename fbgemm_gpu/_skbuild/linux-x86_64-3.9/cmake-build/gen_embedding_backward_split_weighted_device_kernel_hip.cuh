@@ -99,8 +99,8 @@ DEVICE_INLINE void compute_grad_sum_weighted_unroll_1_ref(
     const unsigned int shfl_sync_mask,
     const int32_t vec_start
 ) {
-      int32x4_t res =
-        fbgemm_gpu::rocm::amdgcn_make_buffer_resource(&grad_output[0][0]);
+    //   int32x4_t res =
+    //     fbgemm_gpu::rocm::amdgcn_make_buffer_resource(&grad_output[0][0]);
     for (int32_t sl = sl_start; sl < sl_end; sl += kThreadGroupSize) {
             auto sl_j = sl + threadIdx.x;
             const auto b_t = sl_j < sl_end
@@ -132,21 +132,21 @@ DEVICE_INLINE void compute_grad_sum_weighted_unroll_1_ref(
                             const int32_t d = (((vec + vec_start) * kThreadGroupSize + threadIdx.x) * VEC_WIDTH);
                             
                             Vec4TAcc<grad_t> grad_out_vecs[unrollCount];
-                             __builtin_amdgcn_sched_barrier(0);
+                            //  __builtin_amdgcn_sched_barrier(0);
                             #pragma unroll unrollCount
                             for (int32_t i = 0; i < unrollCount; ++i) {
-                                // Vec4TAcc<grad_t> grad_out_vec(
-                                //     &grad_output[0][0] + offs[i] + d// if nobag
-                                // );
+                                Vec4TAcc<grad_t> grad_out_vec(
+                                    &grad_output[0][0] + offs[i] + d// if nobag
+                                );
 
-                                grad_t dst[VEC_WIDTH];
-                                *reinterpret_cast<uint64_t*>(&dst[0]) = llvm_amdgcn_raw_buffer_load_fp16x4(res, (offs[i] + d)*2 , 0, 0);
-                                Vec4TAcc<grad_t> grad_out_vec(dst);
+                                // grad_t dst[VEC_WIDTH];
+                                // *reinterpret_cast<uint64_t*>(&dst[0]) = llvm_amdgcn_raw_buffer_load_fp16x4(res, (offs[i] + d)*2 , 0, 0);
+                                // Vec4TAcc<grad_t> grad_out_vec(dst);
 
                                 grad_out_vecs[i] = grad_out_vec;
 
                             }
-                             __builtin_amdgcn_sched_barrier(0);
+                            //  __builtin_amdgcn_sched_barrier(0);
                             
                             #pragma unroll unrollCount
                             for (int32_t i = 0; i < unrollCount; ++i) {
@@ -451,7 +451,7 @@ DEVICE_INLINE void compute_grad_sum_weighted(
         auto call_unroll = [&](int unroll, int sl_start, int sl_end) {
             switch (unroll) {
                 case 16:
-                        compute_grad_sum_weighted_unroll_1<grad_t,cache_t,kFixedMaxVecsPerThread,kThreadGroupSize,VEC_WIDTH,16>(
+                        compute_grad_sum_weighted_unroll_1_ref<grad_t,cache_t,kFixedMaxVecsPerThread,kThreadGroupSize,VEC_WIDTH,16>(
                             grad_sum, grad_output,
                             D_offsets,
                             D, T, sorted_infos,
@@ -492,7 +492,7 @@ DEVICE_INLINE void compute_grad_sum_weighted(
                 //     );
                 //     break;
                 case 1:
-                    compute_grad_sum_weighted_unroll_1<grad_t,cache_t,kFixedMaxVecsPerThread,kThreadGroupSize,VEC_WIDTH,1>(
+                    compute_grad_sum_weighted_unroll_1_ref<grad_t,cache_t,kFixedMaxVecsPerThread,kThreadGroupSize,VEC_WIDTH,1>(
                         grad_sum, grad_output,
                         D_offsets,
                         D, T, sorted_infos,
